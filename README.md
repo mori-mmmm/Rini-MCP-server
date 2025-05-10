@@ -56,7 +56,7 @@ pip install -r requirements.txt
 python web_search.py
 ```
 
-각 서버는 지정된 포트(예: 웹 검색 서버는 65000번 포트)에서 실행됩니다.
+각 서버는 지정된 포트(예: 웹 검색 서버는 65000번 포트)에서 실행됩니다.  
 Rini API [server](https://github.com/mori-mmmm/Rini-API-server) / [client](https://github.com/mori-mmmm/Rini-API-client) 를 사용하면 쉽게 테스트 해보실 수 있습니다.
 
 ## 향후 개선 사항
