@@ -30,10 +30,17 @@ ext2lang = {
     'rb': 'ruby',
     'rs': 'rust',
     'ts': 'typescript',
-    'et': 'django',  # Assuming 'embedded-template' refers to Django templates
     're': 'regex',
 }
 
+def _read_file_sync(file_path: str):
+    """Synchronously reads a file and returns its content."""
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            return f.read()
+    except Exception as e:
+        print(f"Error reading file {file_path}: {e}")
+        return None
 
 def extract_functions_and_classes(source_code, language):
     lexer = get_lexer_by_name(language)
@@ -83,16 +90,18 @@ def extract_functions_and_classes(source_code, language):
 async def process_repo(folder_path):
     results = {}
     for root, _, files in os.walk(folder_path):
-        for file in files:
-            ext = file.split('.')[-1]
+        for file_name in files:
+            ext = file_name.split('.')[-1]
             if ext in ext2lang:
-                file_path = os.path.join(root, file)
-                try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        source_code = f.read()
-                except:
+                file_path = os.path.join(root, file_name)
+                
+                source_code = await asyncio.to_thread(_read_file_sync, file_path)
+                if source_code is None:
                     continue
-                functions, classes = extract_functions_and_classes(source_code, ext2lang[ext])
+                
+                functions, classes = await asyncio.to_thread(
+                    extract_functions_and_classes, source_code, ext2lang[ext]
+                )
                 results[file_path] = {
                     'functions': functions,
                     'classes': classes
@@ -111,7 +120,7 @@ async def transform_results(results):
         
         # 클래스 처리
         for cls in content['classes']:
-            emb = await get_embedding(func)
+            emb = await get_embedding(cls)
             embeddings_list.append((emb, f"{file_path}", f"{cls}"))
 
     return embeddings_list
@@ -137,10 +146,22 @@ async def rini_github_analysis(query: str, url: str):
     """
     repo_name = url.split('/')[-1]
     print('repo name:', repo_name)
-    if not os.path.exists(f'github/{repo_name}'):
-        os.mkdir(f'github/{repo_name}')
-        os.system(f"git clone {url}.git github/{repo_name}")
-    emb_list = await process_repo(f'github/{repo_name}')
+    repo_path = f'github/{repo_name}'
+
+    if not await asyncio.to_thread(os.path.exists, repo_path):
+        await asyncio.to_thread(os.makedirs, repo_path, exist_ok=True)
+        git_clone_cmd = f"git clone {url}.git {repo_path}"
+        process = await asyncio.create_subprocess_shell(
+            git_clone_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            print(f"Error cloning repository: {stderr.decode(errors='ignore')}")
+            return f"Error cloning repository: {stderr.decode(errors='ignore')}"
+            
+    emb_list = await process_repo(repo_path)
     query_embedding = await get_embedding(query)
     sim_list = []
     for emb, path, code in emb_list:

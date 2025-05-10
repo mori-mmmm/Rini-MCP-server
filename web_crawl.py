@@ -14,9 +14,14 @@ async def rini_get_text_only_from_url(url: str):
     """
     주어진 url의 웹사이트로부터 중요한 텍스트만 가져옵니다.
     """
-    fetched = trafilatura.fetch_url(url)
-    text = trafilatura.extract(fetched)
-    return text
+    def _fetch_and_extract_sync(url_to_fetch):
+        fetched_content = trafilatura.fetch_url(url_to_fetch)
+        if fetched_content is None:
+            return None
+        return trafilatura.extract(fetched_content)
+
+    text_content = await asyncio.to_thread(_fetch_and_extract_sync, url)
+    return text_content
 
 @mcp.tool()
 async def rini_get_all_from_url(url: str, timeout: int = 5):

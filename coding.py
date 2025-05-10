@@ -1,3 +1,4 @@
+import asyncio
 import subprocess
 import sys
 from mcp.server.fastmcp import FastMCP
@@ -33,23 +34,24 @@ async def rini_python_code_execution(code: str):
     """
     stdout_result = ""
     stderr_result = ""
+    return_code = -1 
 
     try:
-        process = subprocess.Popen(
-            [sys.executable, "-c", code],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", code,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
         )
-        stdout_result, stderr_result = process.communicate(timeout=200)
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=200)
+        stdout_result = stdout_bytes.decode(errors='replace') if stdout_bytes else ""
+        stderr_result = stderr_bytes.decode(errors='replace') if stderr_bytes else ""
         return_code = process.returncode
 
-    
-    except subprocess.TimeoutExpired:
+    except asyncio.TimeoutError:
         stderr_result = "Code execution timed out."
-        if process:
+        if process and process.returncode is None:
             process.kill()
-            stdout_result, stderr_result = process.communicate()
+            await process.wait() 
     except Exception as e:
         stderr_result = f"An error occurred during code execution: {str(e)}"
 

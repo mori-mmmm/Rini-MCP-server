@@ -3,6 +3,7 @@ from mcp.server.fastmcp import FastMCP
 from playwright.async_api import async_playwright
 import trafilatura
 import http.client
+import asyncio
 import json
 from typing import Optional
 from dotenv import load_dotenv
@@ -89,16 +90,22 @@ class StealthBrowser:
         return page, context
 
     async def close(self):
-        await self.browser.close()
-        await self.playwright.stop()
+        if self.browser:
+            await self.browser.close()
+        if self.playwright:
+            await self.playwright.stop()
 
 
-def get_web_text(url):
-    downloaded = trafilatura.fetch_url(url)
-    return trafilatura.extract(downloaded)
+async def get_web_text(url):
+    def _sync_get_web_text(url_to_fetch):
+        downloaded = trafilatura.fetch_url(url_to_fetch)
+        if downloaded is None:
+            return None
+        return trafilatura.extract(downloaded)
+    return await asyncio.to_thread(_sync_get_web_text, url)
 
 async def get_web_text_stealth(url):
-    browser = StealthBrowser(headless=True)  # Running in headless mode
+    browser = StealthBrowser(headless=True)
     await browser.initialize()
     page, context = await browser.new_page()
 
@@ -113,34 +120,18 @@ async def get_web_text_stealth(url):
 
     return result
 
-async def pprint(text, prefix="[WebSearchAgent] "):
-    text = str(text)
-    text_list = text.split("\\n")
-    print("\\n".join([prefix + x for x in text_list] ))
-
 @mcp.tool()
 async def rini_google_search_base(query: str, num: int = 20, start: int = 0, lang: str = 'ko', since: str = None, until: str = None, source: str = None):
     """
     구글 검색을 한 뒤 검색 결과를 가져오는 함수. 외부 정보나 실시간 데이터가 필요할 때 사용하는 함수. 구글 검색 결과 1페이지에 보이는 미리보기 정보만 가져오고 속도가 상대적으로 빠름.
     """
     ban_list = [
-            'accounts.google.com',
-            'support.google.com',
-            'maps.google.com',
-            'policy.naver.com',
-            'navercorp.com',
-            'adcr.naver.com',
-            'support.microsoft',
-            'help.naver.com',
-            'keep.naver.com',
-            'policies.google.com',
-            'www.google.com/preferences',
-            'www.google.com',
-            'facebook.com',
-            'youtube.com',
-        ]
-
-    conn = http.client.HTTPSConnection("google.serper.dev")
+        'accounts.google.com', 'support.google.com', 'maps.google.com',
+        'policy.naver.com', 'navercorp.com', 'adcr.naver.com',
+        'support.microsoft', 'help.naver.com', 'keep.naver.com',
+        'policies.google.com', 'www.google.com/preferences', 'www.google.com',
+        'facebook.com', 'youtube.com',
+    ]
 
     if since and until:
         tbs = f'cdr:1,cd_min:{since},cd_max:{until}'
@@ -161,51 +152,53 @@ async def rini_google_search_base(query: str, num: int = 20, start: int = 0, lan
       "tbs": tbs
     }
     headers = {
-      'X-API-KEY': os.getenv("SERPER_API_KEY"),
-      'Content-Type': 'application/json'
+        'X-API-KEY': os.getenv("SERPER_API_KEY"),
+        'Content-Type': 'application/json'
     }
-    # pprint(f"params: {payload}")
-    conn.request("POST", "/search", json.dumps(payload), headers)
-    res = conn.getresponse()
-    data = res.read()
-    ret = data.decode("utf-8")
-    results = json.loads(ret)
 
-    #print(results)
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post("https://google.serper.dev/search", json=payload, headers=headers, timeout=20.0)
+            response.raise_for_status() 
+            results = response.json()
+        except httpx.HTTPStatusError as e:
+            print(f"HTTP error occurred: {e.response.status_code} - {e.response.text}")
+            return "검색 중 오류가 발생했습니다 (HTTP 상태 코드)."
+        except httpx.RequestError as e:
+            print(f"Request error occurred: {e}")
+            return "검색 중 오류가 발생했습니다 (요청 오류)."
+        except json.JSONDecodeError:
+            print("Error decoding JSON response from search API")
+            return "검색 결과를 파싱하는 중 오류가 발생했습니다."
 
-    if 'organic' not in results:
-        payload['num'] = 50
-        conn.request("POST", "/search", json.dumps(payload), headers)
-        res = conn.getresponse()
-        data = res.read()
-        ret = data.decode("utf-8")
-        results = json.loads(ret)
 
-    if 'organic' not in results:
+    if 'organic' not in results or not results['organic']:
+        # payload['num'] = 50 
+        # try:
+        #     response = await client.post("https://google.serper.dev/search", json=payload, headers=headers, timeout=20.0)
+        #     response.raise_for_status()
+        #     results = response.json()
+        # except ... (handle errors as above)
+        #
+        # if 'organic' not in results or not results['organic']:
         print("검색 결과가 없습니다.")
         return "검색 결과가 없습니다."
-        
-
-    #pprint(f"results: {results}")
 
     links = []
     result = []
-    for x in results['organic']:
-        link = x['link']
-        # Skip links that are in the ban_list
-        if any(banned_site in link for banned_site in ban_list):
-            continue
-        links.append(link)
-        result.append(str(x))
+    for x in results.get('organic', []):
+        link = x.get('link')
+        if link and not any(banned_site in link for banned_site in ban_list):
+            links.append(link)
+            result.append(str(x))
 
-    if len(result) == 0:
+    if not result:
         ret = "검색결과가 없습니다. 검색 기간이 너무 짧지는 않은지, 인자의 종류와 포맷은 잘 지켰는지 확인하세요."
         print(ret)
         return ret
         
 
     ret = '\\n\\n'.join(result)
-    #pprint(f"search result:{ret}")
     print(ret)
     return ret
 
@@ -215,23 +208,12 @@ async def rini_google_search_link_only(query: str, num: int = 20, start: int = 0
     구글 검색을 한 뒤 검색 결과의 링크들만 가져오는 함수. 외부 정보나 실시간 데이터가 필요할 때 사용하는 함수.
     """
     ban_list = [
-            'accounts.google.com',
-            'support.google.com',
-            'maps.google.com',
-            'policy.naver.com',
-            'navercorp.com',
-            'adcr.naver.com',
-            'support.microsoft',
-            'help.naver.com',
-            'keep.naver.com',
-            'policies.google.com',
-            'www.google.com/preferences',
-            'www.google.com',
-            'facebook.com',
-            'youtube.com',
-        ]
-
-    conn = http.client.HTTPSConnection("google.serper.dev")
+        'accounts.google.com', 'support.google.com', 'maps.google.com',
+        'policy.naver.com', 'navercorp.com', 'adcr.naver.com',
+        'support.microsoft', 'help.naver.com', 'keep.naver.com',
+        'policies.google.com', 'www.google.com/preferences', 'www.google.com',
+        'facebook.com', 'youtube.com',
+    ]
 
     if since and until:
         tbs = f'cdr:1,cd_min:{since},cd_max:{until}'
@@ -242,7 +224,7 @@ async def rini_google_search_link_only(query: str, num: int = 20, start: int = 0
     else:
         tbs = ""
     payload = {
-      "q": query + f' site:{source}' if source is not None else query,
+      "q": query + (f' site:{source}' if source else ""),
       "start": start,
       "num": num,
       "location": "Seoul, Seoul, South Korea",
@@ -252,36 +234,36 @@ async def rini_google_search_link_only(query: str, num: int = 20, start: int = 0
       "tbs": tbs
     }
     headers = {
-      'X-API-KEY': os.getenv("SERPER_API_KEY"),
-      'Content-Type': 'application/json'
+        'X-API-KEY': os.getenv("SERPER_API_KEY"),
+        'Content-Type': 'application/json'
     }
-    # pprint(f"params: {payload}")
-    conn.request("POST", "/search", json.dumps(payload), headers)
-    res = conn.getresponse()
-    data = res.read()
-    ret = data.decode("utf-8")
-    results = json.loads(ret)
 
-    if 'organic' not in results:
-        payload['num'] = 50
-        conn.request("POST", "/search", json.dumps(payload), headers)
-        res = conn.getresponse()
-        data = res.read()
-        ret = data.decode("utf-8")
-        results = json.loads(ret)
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post("https://google.serper.dev/search", json=payload, headers=headers, timeout=20.0)
+            response.raise_for_status()
+            results = response.json()
+        except httpx.HTTPStatusError as e:
+            print(f"HTTP error occurred: {e.response.status_code} - {e.response.text}")
+            return []
+        except httpx.RequestError as e:
+            print(f"Request error occurred: {e}")
+            return []
+        except json.JSONDecodeError:
+            print("Error decoding JSON response from search API")
+            return []
 
-    if 'organic' not in results:
+    if 'organic' not in results or not results['organic']:
         print("검색 결과가 없습니다.")
         return []
         
     links = []
-    for x in results['organic']:
-        link = x['link']
-        # Skip links that are in the ban_list
-        if not any(banned_site in link for banned_site in ban_list):
+    for x in results.get('organic', []):
+        link = x.get('link')
+        if link and not any(banned_site in link for banned_site in ban_list):
             links.append(link)
 
-    if len(links) == 0:
+    if not links:
         print("검색결과가 없습니다. 검색 기간이 너무 짧지는 않은지, 인자의 종류와 포맷은 잘 지켰는지 확인하세요.")
         return []
         
@@ -294,15 +276,26 @@ async def rini_google_search_shallow(query: str):
     구글 검색을 한 뒤 검색 결과로 나온 페이지들을 일일이 방문해서 내용을 가져오는 함수. 외부 정보나 실시간 데이터가 필요할 때 사용하는 함수. 속도가 상대적으로 느림.
     """
     links = await rini_google_search_link_only(query)
-    results = []
-    for link in links:
+    if not links:
+        return "관련 링크를 찾지 못했습니다."
+
+    async def fetch_and_extract_content(link):
         try:
-            downloaded = trafilatura.fetch_url(link)
-            result = trafilatura.extract(downloaded)
-        except:
-            continue
-        results.append(result)
-    return '\n\n'.join(results)
+            content = await get_web_text(link) 
+            return content if content else ""
+        except Exception as e:
+            print(f"Error processing link {link}: {e}")
+            return ""
+
+    tasks = [fetch_and_extract_content(link) for link in links[:15]]
+    link_contents = await asyncio.gather(*tasks)
+    
+    valid_contents = [content for content in link_contents if content] 
+    
+    if not valid_contents:
+        return "링크에서 내용을 추출하지 못했습니다."
+        
+    return '\n\n'.join(valid_contents)
 
 if __name__ == "__main__":
     mcp.run("sse")

@@ -3,8 +3,8 @@ from dotenv import load_dotenv
 import asyncio
 import mimetypes
 from pydub import AudioSegment
-import uuid # For generating unique temporary file names
-import io # Potentially for in-memory file handling if supported by API, though temp files are safer for whisper
+import uuid
+import io
 
 load_dotenv()
 
@@ -113,11 +113,16 @@ import tiktoken
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 async def get_embedding(text, model="text-embedding-3-large"):
-    return openai_client.embeddings.create(input=[text], model=model).data[0].embedding
+    response = await asyncio.to_thread(
+        openai_client.embeddings.create, input=[text], model=model
+    )
+    return response.data[0].embedding
 
 async def get_embedding_batch(texts, model="text-embedding-3-large"):
-    ret = openai_client.embeddings.create(input=texts, model=model)
-    return [x.embedding for x in ret.data]
+    response = await asyncio.to_thread(
+        openai_client.embeddings.create, input=texts, model=model
+    )
+    return [x.embedding for x in response.data]
 
 async def oai_get_m2t(messages, tools=None, model=None):
     OPENAI_MODEL = "gpt-4.1-nano"
@@ -128,12 +133,14 @@ async def oai_get_m2t(messages, tools=None, model=None):
         prompt = get_tool_prompt(tools)
         new_messages = [x for x in messages]
         new_messages += [{"role":"user", "content": prompt}]
-        completion = openai_client.chat.completions.create(
+        completion = await asyncio.to_thread(
+            openai_client.chat.completions.create,
             model=model,
             messages=new_messages,
         )
     else:
-        completion = openai_client.chat.completions.create(
+        completion = await asyncio.to_thread(
+            openai_client.chat.completions.create,
             model=model,
             messages=messages,
         )
@@ -151,58 +158,62 @@ async def oai_get_m2m(messages, tools=None, model=None):
     )
     return messages
 
-def num_tokens_from_messages(messages, model="gpt-4o-2024-08-06"):
+async def num_tokens_from_messages(messages, model="gpt-4o-2024-08-06"):
     """Returns the number of tokens used by a list of messages."""
-    try:
-        encoding = tiktoken.encoding_for_model(model)
-    except KeyError:
-        encoding = tiktoken.get_encoding("cl100k_base")
-    if model == "gpt-4o-2024-08-06":  # note: future models may deviate from this
-        num_tokens = 0
-        for message in messages:
-            num_tokens += 4  # every message follows <im_start>{role/name}\n{content}<im_end>\n
-            for key, value in message.items():
-                num_tokens += len(encoding.encode(value, disallowed_special=()))
-                if key == "name":  # if there's a name, the role is omitted
-                    num_tokens += -1  # role is always required and always 1 token
-        num_tokens += 2  # every reply is primed with <im_start>assistant
-        return num_tokens
-    else:
-        raise NotImplementedError(f"""num_tokens_from_messages() is not presently implemented for model {model}.
-    Please check the library docs for more info on message-to-token conversion.""")
+    
+    def _sync_num_tokens_from_messages(messages, model):
+        try:
+            encoding = tiktoken.encoding_for_model(model)
+        except KeyError:
+            encoding = tiktoken.get_encoding("cl100k_base")
+        if model == "gpt-4o-2024-08-06":
+            num_tokens = 0
+            for message in messages:
+                num_tokens += 4  # every message follows <im_start>{role/name}\n{content}<im_end>\n
+                for key, value in message.items():
+                    num_tokens += len(encoding.encode(value, disallowed_special=()))
+                    if key == "name":  # if there's a name, the role is omitted
+                        num_tokens += -1  # role is always required and always 1 token
+            num_tokens += 2  # every reply is primed with <im_start>assistant
+            return num_tokens
+        else:
+            raise NotImplementedError(f"""num_tokens_from_messages() is not presently implemented for model {model}.
+        Please check the library docs for more info on message-to-token conversion.""")
+
+    return await asyncio.to_thread(_sync_num_tokens_from_messages, messages, model)
 
 async def _transcribe_chunk_openai(chunk_audio_segment, chunk_index, original_format="mp3"):
     """Helper function to transcribe a single audio chunk using OpenAI Whisper."""
     temp_file_path = f"audio_chunks/temp_chunk_{uuid.uuid4()}_{chunk_index}.{original_format}"
     
-    if not os.path.exists("audio_chunks"):
+    if not await asyncio.to_thread(os.path.exists, "audio_chunks"):
         try:
-            os.makedirs("audio_chunks")
+            await asyncio.to_thread(os.makedirs, "audio_chunks")
         except OSError as e:
             print(f"Error creating directory audio_chunks: {e}")
 
     try:
-        chunk_audio_segment.export(temp_file_path, format=original_format)
+        await asyncio.to_thread(chunk_audio_segment.export, temp_file_path, format=original_format)
     except Exception as e:
         print(f"Error exporting audio chunk {chunk_index} to {temp_file_path}: {e}")
         return ""
 
     transcription = ""
     try:
-        with open(temp_file_path, 'rb') as audio_file_chunk:
+        with open(temp_file_path, 'rb') as audio_file_chunk_sync:
             response = await asyncio.to_thread(
                 openai_client.audio.transcriptions.create,
                 model="gpt-4o-transcribe",
-                file=audio_file_chunk
+                file=audio_file_chunk_sync 
             )
         transcription = response.text if response else ""
     except Exception as e:
         print(f"Error transcribing chunk {chunk_index} from {temp_file_path}: {e}")
         transcription = ""
     finally:
-        if os.path.exists(temp_file_path):
+        if await asyncio.to_thread(os.path.exists, temp_file_path):
             try:
-                os.remove(temp_file_path)
+                await asyncio.to_thread(os.remove, temp_file_path)
             except Exception as e:
                 print(f"Error deleting temporary file {temp_file_path}: {e}")
     return transcription
@@ -214,13 +225,17 @@ async def stt(file_path):
             print(f"Unsupported file format {file_format}, defaulting to mp3 for export.")
             file_format = "mp3"
 
-        audio = AudioSegment.from_file(file_path)
-        
+        audio = await asyncio.to_thread(AudioSegment.from_file, file_path)
         ten_minutes_ms = 10 * 60 * 1000  # pydub uses milliseconds
         
         chunks = []
-        for i in range(0, len(audio), ten_minutes_ms):
-            chunks.append(audio[i:i + ten_minutes_ms])
+        def _create_chunks_sync(audio_segment, chunk_size_ms):
+            _chunks = []
+            for i in range(0, len(audio_segment), chunk_size_ms):
+                _chunks.append(audio_segment[i:i + chunk_size_ms])
+            return _chunks
+        
+        chunks = await asyncio.to_thread(_create_chunks_sync, audio, ten_minutes_ms)
 
         if not chunks:
             print("No audio chunks to process.")
@@ -287,7 +302,8 @@ async def get_m2m(messages, tools=None, model=None):
     return ret
 
 async def get_t2i(text):
-    response = openai_client.images.generate(
+    response = await asyncio.to_thread(
+        openai_client.images.generate,
         model="dall-e-3",
         prompt=text,
         size="1024x1024",
@@ -298,7 +314,8 @@ async def get_t2i(text):
     return image_urls[0]
 
 async def get_it2t_url(prompt, img_url):
-    response = openai_client.chat.completions.create(
+    response = await asyncio.to_thread(
+        openai_client.chat.completions.create,
         model="gpt-4o-2024-08-06",
         messages=[{
             "role": "user",
@@ -322,7 +339,7 @@ def _read_image_bytes_and_detect_mime(image_path: str):
         raise FileNotFoundError(f"이미지 파일을 찾을 수 없습니다: '{image_path}'")
 
     mime_type, _ = mimetypes.guess_type(image_path)
-    supported_image_types = ['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif']
+    # supported_image_types = ['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif']
 
     with open(image_path, "rb") as image_file:
         image_bytes = image_file.read()
@@ -331,10 +348,11 @@ def _read_image_bytes_and_detect_mime(image_path: str):
 
 async def get_it2t_path(image_path: str, prompt: str):
     """이미지와 텍스트 프롬프트를 받아 비동기적으로 Gemini 멀티모달 모델 호출"""
-    fixed_model_name = "gemini-2.0-flash" # 모델 이름 업데이트 (또는 설정 가능하게)
+    fixed_model_name = "gemini-2.0-flash"
 
-    # 이미지 읽기 (동기 방식 유지)
-    image_bytes, detected_mime_type = _read_image_bytes_and_detect_mime(image_path)
+    image_bytes, detected_mime_type = await asyncio.to_thread(
+        _read_image_bytes_and_detect_mime, image_path
+    )
 
     image_part = types.Part.from_bytes(mime_type=detected_mime_type, data=image_bytes)
     text_part = types.Part.from_text(text=prompt)
