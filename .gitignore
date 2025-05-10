@@ -1,0 +1,12 @@
+venv
+.env
+__pycache__
+github/
+*.mp3
+*.wav
+*.mp4
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp

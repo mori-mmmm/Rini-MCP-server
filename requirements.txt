@@ -1,0 +1,10 @@
+openai
+google-generativeai
+requests
+beautifulsoup4
+yt-dlp
+pydub
+SpeechRecognition
+scikit-learn
+tiktoken
+playwright
