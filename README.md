@@ -42,7 +42,7 @@
 - **`rini_create_and_execute_mcp_server(query: str, filename: str, port: int)`**: 요청 사항에 맞는 MCP 서버 코드를 생성하고 이를 실행합니다. 
 - 기본 포트: 65006
 
-**필수 라이브러리 설치:**
+## 필수 라이브러리 설치
 
 프로젝트 실행에 필요한 라이브러리를 설치하려면 다음 명령어를 사용하십시오:
 
